@@ -11,6 +11,7 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--epochs', type=int, required=True, help='The number of epochs to run the model')
+parser.add_argument('--model', type=str, required=True, help='The model to use. Either "cnn" or "lstm"')
 args = parser.parse_args()
 
 
@@ -143,9 +144,55 @@ class CONVClassifier(nn.Module):
         return F.log_softmax(self.clf(th.stack(embs)), dim=1).squeeze(1)
 
 
-model = CONVClassifier(vocab_size=len(words), embedding_dim=200, sentence_embedding_dim=50, nclass=2)
+class LSTMClassifier(nn.Module):
+
+    def __init__(self, vocab_size, embedding_dim, sentence_embedding_dim=100, nclass=1):
+        super(LSTMClassifier, self).__init__()
+        # Word embedding initialization
+        self.emb_table = th.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embedding_dim)
+        # LSTM layer
+        self.lstm = nn.LSTM(input_size=embedding_dim, hidden_size=sentence_embedding_dim, num_layers=1)
+        # Linear sentence classifier layer
+        self.clf = nn.Sequential(
+            nn.Linear(sentence_embedding_dim, 50),
+            nn.Linear(50, nclass)
+        )
+
+    def forward(self, inputs):
+        embs = []
+        for words in inputs:
+            # print(f"word indices = {words}")
+            # For each sentence (list of word indices), lookup the corresponding word embeddings
+            w_embs = self.emb_table(words)
+            # print(f"word embeddings = {w_embs}")
+            # Apply the LSTM to the word embedding sequence
+            out, _ = self.lstm(w_embs.unsqueeze(1))
+            # print(f"LSTM output = {out}")
+            # Apply max pooling to LSTM states
+            max_pooled = th.max(out, dim=0)[0]
+            # print(f"LSTM Max-Pool = {max_pooled}")
+            # Add max pooled state to the embedding list
+            emb = th.sigmoid(max_pooled)
+            embs.append(emb)
+        # Classify sentence embeddings
+        embs = th.stack(embs).squeeze(1)
+        clf_out = self.clf(embs)
+        # print(f"Classifier output = {clf_out}")
+        probs = F.log_softmax(clf_out, dim=1)
+        # print(f"probabilities = {probs}")
+        return probs
+
+
+if args.model == 'cnn':
+    model_class = CONVClassifier
+elif args.model == 'lstm':
+    model_class = LSTMClassifier
+else:
+    raise ValueError("Model must be either 'cnn' or 'lstm'")
+
+model = model_class(vocab_size=len(words), embedding_dim=200, sentence_embedding_dim=50, nclass=2)
 loss_fn = nn.NLLLoss()
-optim = op.Adam(model.parameters(), lr=0.01)
+optim = op.Adam(model.parameters(), lr=0.001)
 
 for epoch in range(1, args.epochs + 1):
 
@@ -167,9 +214,12 @@ for epoch in range(1, args.epochs + 1):
 
     with th.no_grad():
         dev_logits = model(x_dev_i)
+        print(f"dev logits = {dev_logits}")
         pred = th.argmax(dev_logits, dim=1)
+        print(f"predictions = {pred.sum()}")
         correct = (pred == y_dev).sum().item()
         total = y_dev.size(0)
+        print(f"[correct = {correct} | total = {total}]")
         print(f"[dev accuracy = {correct / total}]")
 
 sent_p = ['Worst', 'film', 'I', 'ever', 'watched']
